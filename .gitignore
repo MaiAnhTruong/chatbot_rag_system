@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/ venv/ env/
+.env
+*.env
+*.key
+*.pem
+src/chroma_db/
+*.sqlite3
+*.bin
+logs/
+outputs/
+checkpoints/
+.vscode/
+.idea/
+.DS_Store

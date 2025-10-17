@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>RAGOps Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0b0f19; --panel:#111727; --muted:#b4c0d3; --text:#e6edf6; --accent:#6ea8fe; --assistant:#30363d; --border:#23314f; --danger:#ff6961; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;height:100vh;display:grid;grid-template-rows:auto 1fr auto}
+    header{background:var(--panel);border-bottom:1px solid var(--border);padding:10px 14px;display:grid;gap:8px;grid-template-columns: 1.2fr .5fr .8fr auto auto auto;align-items:center}
+    header input{width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0f1524;color:var(--text)}
+    header button{padding:8px 12px;border-radius:10px;border:1px solid var(--border);background:#0f1524;color:var(--text);cursor:pointer}
+    header button:hover{border-color:var(--accent)}
+    #chat{padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+    .msg{max-width:900px;width:fit-content;line-height:1.5;padding:10px 12px;border-radius:12px;border:1px solid var(--border);white-space:pre-wrap;word-wrap:break-word;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+    .msg.user{align-self:flex-end;background:rgba(31,111,235,.15);border-color:#2b4477}
+    .msg.assistant{align-self:flex-start;background:var(--assistant)}
+    .meta{font-size:12px;color:var(--muted);margin-top:4px}
+    footer{border-top:1px solid var(--border);background:var(--panel);padding:10px 14px;display:grid;grid-template-columns:1fr auto;gap:8px}
+    #prompt{resize:none;width:100%;min-height:44px;max-height:160px;padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#0f1524;color:var(--text)}
+    .btn{padding:10px 14px;border-radius:12px;border:1px solid var(--border);background:#0f1524;color:var(--text);cursor:pointer;min-width:96px}
+    .btn.primary{background:#15325b;border-color:#234e8e}
+    .btn.danger{background:#3a0f12;border-color:#5d1a20;color:#ffdddd}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .spinner{width:14px;height:14px;border:2px solid var(--muted);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .error{color:var(--danger)}
+  </style>
+</head>
+<body>
+  <header>
+    <input id="baseUrl" placeholder="Base URL (vd: http://localhost:8000)" />
+    <input id="apiVer" placeholder="API Version (vd: v1)" />
+    <input id="apiKey" placeholder="API Key (nếu bật auth api_key)" />
+    <button id="testBtn" title="Ping /health & /ready">Test</button>
+    <button id="newChatBtn" title="Tạo session mới">New chat</button>
+    <button id="clearBtn" title="Xoá màn hình">Clear</button>
+  </header>
+
+  <main id="chat" aria-live="polite" aria-busy="false"></main>
+
+  <footer>
+    <textarea id="prompt" placeholder="Nhập câu hỏi, nhấn Enter để gửi. Shift+Enter để xuống dòng."></textarea>
+    <div>
+      <button id="sendBtn" class="btn primary">Gửi</button>
+      <button id="stopBtn" class="btn danger" disabled>Dừng</button>
+    </div>
+  </footer>
+
+<script>
+(() => {
+  const els = {
+    chat: document.getElementById('chat'),
+    baseUrl: document.getElementById('baseUrl'),
+    apiVer: document.getElementById('apiVer'),
+    apiKey: document.getElementById('apiKey'),
+    prompt: document.getElementById('prompt'),
+    sendBtn: document.getElementById('sendBtn'),
+    stopBtn: document.getElementById('stopBtn'),
+    newChatBtn: document.getElementById('newChatBtn'),
+    clearBtn: document.getElementById('clearBtn'),
+    testBtn: document.getElementById('testBtn'),
+  };
+
+  const cfg = {
+    get baseUrl(){ return localStorage.getItem('baseUrl') || 'http://localhost:8000'; },
+    set baseUrl(v){ localStorage.setItem('baseUrl', (v||'').trim()); },
+    get apiVer(){ return localStorage.getItem('apiVer') || 'v1'; },
+    set apiVer(v){ localStorage.setItem('apiVer', (v||'v1').trim()); },
+    get apiKey(){ return localStorage.getItem('apiKey') || ''; },
+    set apiKey(v){ localStorage.setItem('apiKey', (v||'').trim()); },
+    get sessionId(){ let x=localStorage.getItem('sessionId'); if(!x){x=genId('s');localStorage.setItem('sessionId',x)} return x; },
+    set sessionId(v){ localStorage.setItem('sessionId', v||genId('s')); },
+    get userId(){ let u=localStorage.getItem('userId'); if(!u){u=genId('u');localStorage.setItem('userId',u)} return u; },
+    set userId(v){ localStorage.setItem('userId', v||genId('u')); },
+  };
+
+  els.baseUrl.value = cfg.baseUrl;
+  els.apiVer.value = cfg.apiVer;
+  els.apiKey.value = cfg.apiKey;
+
+  els.baseUrl.addEventListener('change', e => cfg.baseUrl = e.target.value);
+  els.apiVer.addEventListener('change', e => cfg.apiVer = e.target.value);
+  els.apiKey.addEventListener('change', e => cfg.apiKey = e.target.value);
+
+  function genId(prefix='id'){ return `${prefix}_${Math.random().toString(36).slice(2,10)}`; }
+  function scrollToBottom(){ els.chat.scrollTop = els.chat.scrollHeight; }
+  function bubble(role, text=''){ const d=document.createElement('div'); d.className=`msg ${role}`; d.textContent=text; els.chat.appendChild(d); scrollToBottom(); return d; }
+  function meta(text, cls=''){ const m=document.createElement('div'); m.className=`meta ${cls}`.trim(); m.textContent=text; els.chat.appendChild(m); scrollToBottom(); return m; }
+  function setBusy(b){ els.sendBtn.disabled=b; els.stopBtn.disabled=!b; els.prompt.disabled=b; els.chat.setAttribute('aria-busy', b?'true':'false'); }
+  function uiError(msg){ meta(msg,'error'); }
+
+  // Build API endpoints robustly:
+  function origin(){ return cfg.baseUrl.replace(/\/+$/,''); } // no trailing /
+  function ver(){ return cfg.apiVer.replace(/^\/+/,'').replace(/\/+$/,''); } // "v1"
+  function apiUrl(resource){ return `${origin()}/${ver()}/${resource}/`; }   // e.g. /v1/sse-retrieve/
+  function healthUrl(){ return `${origin()}/health`; }  // health/ready ở root (không có /v1)
+  function readyUrl(){ return `${origin()}/ready`; }
+
+  // ---- Diagnostics ----
+  els.testBtn.addEventListener('click', async () => {
+    meta(`🧪 Test: health=${healthUrl()} | ready=${readyUrl()} | sse=${apiUrl('sse-retrieve')} | rest=${apiUrl('rest-retrieve')}`);
+    try{
+      const h = await fetch(healthUrl()); meta(`health: ${h.status}`);
+    }catch(e){ uiError(`health lỗi: ${e.message}`); }
+    try{
+      const r = await fetch(readyUrl()); meta(`ready: ${r.status}`); 
+      if (r.ok){ const body = await r.json(); meta(`ready.status: ${JSON.stringify(body)}`);}
+    }catch(e){ uiError(`ready lỗi: ${e.message}`); }
+  });
+
+  // Abort & SSE state
+  let currentAbort = null;
+  let lastEventId = 0;
+
+  async function askSSE(question) {
+    const url = apiUrl('sse-retrieve');
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(cfg.apiKey ? {'Authorization': `Bearer ${cfg.apiKey}`} : {}),
+      'x-user-id': cfg.userId,
+      ...(lastEventId ? {'Last-Event-ID': String(lastEventId)} : {}),
+    };
+    currentAbort = new AbortController();
+    const body = JSON.stringify({ question, session_id: cfg.sessionId, user_id: cfg.userId });
+
+    const res = await fetch(url, { method:'POST', headers, body, signal: currentAbort.signal });
+    if (!res.ok || !res.body) {
+      throw new Error(`SSE HTTP ${res.status} tại ${url}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    function parseSSE(chunk){
+      const ev = { id:null, event:'message', data:'' };
+      for (const ln of chunk.split('\n')) {
+        if (ln.startsWith(':')) continue;
+        const p = ln.indexOf(':');
+        const field = (p === -1 ? ln : ln.slice(0, p)).trim();
+        const value = (p === -1 ? '' : ln.slice(p+1)).trimStart();
+        if (field === 'id') ev.id = value;
+        else if (field === 'event') ev.event = value;
+        else if (field === 'data') ev.data += (ev.data ? '\n' : '') + value;
+      }
+      try { ev.data = ev.data ? JSON.parse(ev.data) : {}; } catch { ev.data = {}; }
+      return ev;
+    }
+
+    async function readLoop(onEvent){
+      while(true){
+        const {value, done} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream:true});
+        let idx;
+        while((idx = buffer.indexOf('\n\n')) >= 0){
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          if (raw.trim() !== '') onEvent(parseSSE(raw));
+        }
+      }
+    }
+
+    return { readLoop };
+  }
+
+  async function askREST(question){
+    const url = apiUrl('rest-retrieve');
+    const headers = {
+      'Content-Type':'application/json',
+      ...(cfg.apiKey ? {'Authorization': `Bearer ${cfg.apiKey}`} : {}),
+      'x-user-id': cfg.userId,
+      'Idempotency-Key': genId('idem'),
+    };
+    const body = JSON.stringify({ question, session_id: cfg.sessionId, user_id: cfg.userId });
+    const res = await fetch(url, { method:'POST', headers, body });
+    if (!res.ok){
+      const t = await res.text().catch(()=> '');
+      throw new Error(`REST HTTP ${res.status} tại ${url} – ${t}`);
+    }
+    return res.json();
+  }
+
+  async function send(){
+    const q = els.prompt.value.trim();
+    if (!q) return;
+    els.prompt.value = '';
+    lastEventId = 0;
+
+    bubble('user', q);
+    const ab = bubble('assistant', '');
+    const loading = meta('Đang suy nghĩ…'); const sp=document.createElement('span'); sp.className='spinner'; loading.appendChild(sp);
+    setBusy(true);
+
+    try{
+      const sse = await askSSE(q);
+      await sse.readLoop((ev) => {
+        if (ev.id) lastEventId = Number(ev.id);
+        if (ev.event === 'delta' && ev.data && typeof ev.data.text === 'string'){
+          ab.textContent += ev.data.text; scrollToBottom();
+        }
+      });
+    }catch(e){
+      uiError(`Stream lỗi: ${e.message}. Fallback REST.`);
+      try{
+        const resp = await askREST(q);
+        ab.textContent = resp.text || '(không có nội dung)';
+      }catch(e2){
+        ab.textContent = '';
+        uiError(`REST lỗi: ${e2.message}`);
+      }
+    }finally{
+      loading.remove();
+      setBusy(false);
+      currentAbort = null;
+    }
+  }
+
+  // UI events
+  els.sendBtn.addEventListener('click', send);
+  els.stopBtn.addEventListener('click', ()=>{ if(currentAbort){ currentAbort.abort(); meta('Đã dừng.','error'); setBusy(false);} });
+  els.newChatBtn.addEventListener('click', ()=>{ cfg.sessionId = genId('s'); meta(`🔄 Phiên mới: ${cfg.sessionId}`); });
+  els.clearBtn.addEventListener('click', ()=>{ els.chat.innerHTML=''; meta('🧹 Đã làm sạch.'); });
+  els.prompt.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); els.sendBtn.click(); } });
+
+  // Welcome
+  meta('💡 Nhập Base URL (vd http://localhost:8000), API Version (vd v1), và API Key nếu cần. Phiên: '+cfg.sessionId);
+})();
+</script>
+</body>
+</html>
