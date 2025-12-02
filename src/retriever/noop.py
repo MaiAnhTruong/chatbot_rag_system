@@ -1,3 +1,4 @@
+#/home/truong/IDT/RAG/chatbot_rag_system/src/retriever/noop.py
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 from domain.schemas import RetrievalResult
